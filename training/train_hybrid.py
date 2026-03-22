@@ -81,6 +81,9 @@ def train_ae_for_n(n, rho_db, k_train):
     ae = SupervisedAE(n=n, latent_dim=64, hidden_dim=256, dropout=0.1)
 
     if os.path.exists(checkpoint_path):
+        # Keras requiere un forward pass antes de cargar pesos
+        dummy = tf.zeros([1, n, 2])
+        ae(dummy, training=False)
         ae.load_weights(checkpoint_path)
         ae.trainable = False
         print(f"Checkpoint cargado: {checkpoint_path}")
