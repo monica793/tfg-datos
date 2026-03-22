@@ -1,4 +1,7 @@
+import numpy as np
+import torch
 import tensorflow as tf
+
 from sionna.phy.mapping import Constellation, Mapper, Demapper, BinarySource
 from sionna.phy.fec.polar import Polar5GEncoder, Polar5GDecoder
 from sionna.phy.utils import ebnodb2no
@@ -7,9 +10,9 @@ from sionna.phy.channel import AWGN
 from utils.signal import c2ri, ri2c
 
 
-class ActivityAwarePolarSystem(tf.keras.Model):
+class ActivityAwarePolarSystem:
     """
-    Pipeline híbrido completo: Polar5G + BPSK + SupervisedAE (bloque verde).
+    Pipeline híbrido completo: Polar5G + BPSK + SupervisedAE.
 
     Flujo:
         bits u -> Polar encoder -> BPSK mapper -> [* actividad] -> AWGN
@@ -17,10 +20,10 @@ class ActivityAwarePolarSystem(tf.keras.Model):
         -> Demapper -> Polar decoder -> u_hat
 
     Devuelve: u, u_hat, c_true, c_hat, a_true, p_active, a_hat
+    Todo en numpy para ser agnóstico entre PyTorch y TensorFlow.
     """
 
     def __init__(self, k, n, ae_model, p_empty=0.3, thresh=0.5):
-        super().__init__()
         self.k = k
         self.n = n
         self.rate = k / n
@@ -28,62 +31,76 @@ class ActivityAwarePolarSystem(tf.keras.Model):
         self.thresh = float(thresh)
         self.ae = ae_model
 
-        self.source = BinarySource()
+        self.source  = BinarySource()
         self.encoder = Polar5GEncoder(k=k, n=n)
-        self.const = Constellation("pam", num_bits_per_symbol=1, trainable=False)
-        self.mapper = Mapper(constellation=self.const)
+        self.const   = Constellation("pam", num_bits_per_symbol=1, trainable=False)
+        self.mapper  = Mapper(constellation=self.const)
         self.channel = AWGN()
         self.demapper = Demapper("app", constellation=self.const)
-        self.decoder = Polar5GDecoder(self.encoder, dec_type="SCL", list_size=8)
+        self.decoder  = Polar5GDecoder(self.encoder, dec_type="SCL", list_size=8)
 
-    @tf.function
-    def call(self, inputs, training=False):
-        batch_size, ebno_db = inputs
-        batch_size = tf.cast(batch_size, tf.int32)
+    def __call__(self, batch_size, ebno_db):
+        """
+        batch_size: entero Python
+        ebno_db:    float Python
+        """
+        # Actividad: 1=activo, 0=silencio
+        a_np = (np.random.rand(batch_size, 1) > self.p_empty).astype(np.float32)
 
-        # Actividad aleatoria: 1 = canal activo, 0 = silencio
-        a_true = tf.cast(tf.random.uniform([batch_size, 1]) > self.p_empty, tf.float32)
+        # TX — Sionna 2.0 devuelve tensores PyTorch
+        u_pt     = self.source([batch_size, self.k])
+        c_pt     = self.encoder(u_pt)
+        x_info_pt = self.mapper(c_pt)
 
-        # TX
-        u = self.source([batch_size, self.k])
-        c_true = self.encoder(u) # guardamos el codeword real
-        x_info = self.mapper(c_true)
-        x = x_info * tf.cast(a_true, x_info.dtype) # silencio si a_true=0
+        # Convertir a numpy complejo
+        x_info_np = x_info_pt.detach().cpu().numpy()
+        x_np = x_info_np * a_np  # silencio si a=0
 
-        # Canal AWGN
-        no = ebnodb2no(ebno_db, num_bits_per_symbol=1, coderate=self.rate)
-        y = self.channel(x, no)
-
-        # Bloque verde: SupervisedAE
-        y_ri = c2ri(y)
-        x_hat_ri, p_active = self.ae(y_ri, training=training)
-        y_hat = ri2c(x_hat_ri)
-        a_hat = tf.cast(p_active > self.thresh, tf.float32)
-
-        # Decodificación solo para bloques detectados como activos
-        idx = tf.squeeze(tf.where(tf.squeeze(a_hat, axis=-1) > 0.5), axis=1)
-
-        u_hat_full = tf.zeros([batch_size, self.k], dtype=tf.float32)
-        c_hat_full = tf.zeros([batch_size, self.n], dtype=tf.float32) #codeword estimado
-
-        def decode_selected():
-            y_sel = tf.gather(y_hat, idx)      # [Bsel,N]
-            llr_sel = self.demapper(y_sel, no) # [Bsel,N]
-            u_hat_sel = self.decoder(llr_sel)  # [Bsel,K]
-            u_hat_sel = tf.clip_by_value(tf.round(tf.cast(u_hat_sel, tf.float32)), 0.0, 1.0)
-            # Re-encode para obtener c_hat_sel. 
-            c_hat_sel = self.encoder(u_hat_sel)  # [Bsel,N]
-            c_hat_sel = tf.clip_by_value(tf.round(tf.cast(c_hat_sel, tf.float32)), 0.0, 1.0)
-            u_upd = tf.tensor_scatter_nd_update(
-                u_hat_full, tf.expand_dims(idx, axis=1), u_hat_sel)
-            c_upd = tf.tensor_scatter_nd_update(
-                c_hat_full, tf.expand_dims(idx, axis=1), c_hat_sel)
-            return u_upd, c_upd
-
-        u_hat_full, c_hat_full = tf.cond(
-            tf.size(idx) > 0,
-            decode_selected,
-            lambda: (u_hat_full, c_hat_full)
+        # Canal AWGN en numpy
+        no_val = 10 ** (-ebno_db / 10) / self.rate
+        noise  = np.sqrt(no_val / 2) * (
+            np.random.randn(*x_np.shape) + 1j * np.random.randn(*x_np.shape)
         )
+        y_np = x_np + noise.astype(x_np.dtype)
 
-        return u, u_hat_full, c_true, c_hat_full, a_true, p_active, a_hat
+        # Bloque verde: SupervisedAE (TensorFlow)
+        y_tf = tf.complex(
+            tf.constant(y_np.real, dtype=tf.float32),
+            tf.constant(y_np.imag, dtype=tf.float32)
+        )
+        y_ri = c2ri(y_tf)
+        x_hat_ri, p_active_tf = self.ae(y_ri, training=False)
+        p_active_np = p_active_tf.numpy()           # [B, 1]
+        a_hat_np    = (p_active_np > self.thresh).astype(np.float32)
+
+        # Reconstruir señal limpia desde AE
+        y_hat_tf = ri2c(x_hat_ri)
+        y_hat_np = y_hat_tf.numpy()
+
+        # Decodificación solo en bloques detectados como activos
+        active_idx = np.where(a_hat_np.squeeze() > 0.5)[0]
+
+        u_np     = u_pt.detach().cpu().numpy()
+        c_true_np = c_pt.detach().cpu().numpy()
+        u_hat_np  = np.zeros((batch_size, self.k), dtype=np.float32)
+        c_hat_np  = np.zeros((batch_size, self.n), dtype=np.float32)
+
+        if len(active_idx) > 0:
+            y_sel_np  = y_hat_np[active_idx]
+            y_sel_pt  = torch.tensor(y_sel_np)
+
+            no_pt    = torch.tensor(float(no_val))
+            llr_pt   = self.demapper(y_sel_pt, no_pt)
+            u_hat_pt = self.decoder(llr_pt)
+            u_hat_sel = np.clip(np.round(u_hat_pt.detach().cpu().numpy()), 0, 1).astype(np.float32)
+
+            # Re-encode para obtener c_hat
+            u_hat_pt2 = torch.tensor(u_hat_sel.astype(np.float32))
+            c_hat_sel = np.clip(
+                np.round(self.encoder(u_hat_pt2).detach().cpu().numpy()), 0, 1
+            ).astype(np.float32)
+
+            u_hat_np[active_idx] = u_hat_sel
+            c_hat_np[active_idx] = c_hat_sel
+
+        return u_np, u_hat_np, c_true_np, c_hat_np, a_np, p_active_np, a_hat_np
