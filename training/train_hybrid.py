@@ -48,7 +48,7 @@ def make_batch(src, enc, mapper, ch, ebno_train_db, rate_train, batch_size):
 
     # Sionna devuelve tensores PyTorch — convertimos a numpy y luego a TF
     import torch
-    x_info_np = x_info.numpy() if hasattr(x_info, 'numpy') else x_info.detach().cpu().numpy()
+    x_info_np = x_info.detach().cpu().numpy()
     x_info_tf = tf.complex(
         tf.constant(x_info_np.real, dtype=tf.float32),
         tf.constant(x_info_np.imag, dtype=tf.float32)
