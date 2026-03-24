@@ -21,8 +21,8 @@ EPOCHS          = 50
 STEPS_PER_EPOCH = 300
 BATCH_SIZE      = 256
 LR              = 1e-3
-W_BITS          = 1.0     # peso pérdida decodificación
-W_ACT           = 5.0     # peso pérdida detección de actividad
+W_BITS          = 10.0     # peso pérdida decodificación
+W_ACT           = 1.0     # peso pérdida detección de actividad
 
 CHECKPOINT_DIR  = "results/checkpoints/"
 
@@ -84,12 +84,16 @@ def train_e2e(k: int, n: int, rho_db: float):
             # RX
             u_hat, p_active = decoder(y)          # [B,k], [B,1]
 
-            # Pérdida solo sobre bloques activos para los bits
+            """# Pérdida solo sobre bloques activos para los bits
             mask = a_pt.squeeze() > 0.5
             if mask.sum() > 0:
                 loss_bits = bce(u_hat[mask], u_pt[mask])
             else:
-                loss_bits = torch.tensor(0.0, device=device)
+                loss_bits = torch.tensor(0.0, device=device)"""
+
+            # Pérdida de bits sobre TODOS los bloques activos
+            # (no filtramos por máscara para que el gradiente siempre fluya)
+            loss_bits = bce(u_hat, u_pt)
 
             loss_act  = bce(p_active, a_pt)
             loss      = W_BITS * loss_bits + W_ACT * loss_act
