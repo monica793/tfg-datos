@@ -23,12 +23,13 @@ class ActivityAwarePolarSystem:
     Todo en numpy para ser agnóstico entre PyTorch y TensorFlow.
     """
 
-    def __init__(self, k, n, ae_model, p_empty=0.3, thresh=0.5):
+    def __init__(self, k, n, ae_model, p_empty=0.3, thresh=0.5, alpha_mix=1.0):
         self.k = k
         self.n = n
         self.rate = k / n
         self.p_empty = float(p_empty)
         self.thresh = float(thresh)
+        self.alpha_mix = float(alpha_mix)  # 1.0=AE puro, 0.0=señal original sin denoising
         self.ae = ae_model
 
         self.source  = BinarySource()
@@ -39,7 +40,7 @@ class ActivityAwarePolarSystem:
         self.demapper = Demapper("app", constellation=self.const)
         self.decoder  = Polar5GDecoder(self.encoder, dec_type="SCL", list_size=8)
 
-    def __call__(self, batch_size, ebno_db):
+    def _run(self, batch_size, ebno_db, return_latent=False):
         """
         batch_size: entero Python
         ebno_db:    float Python
@@ -70,12 +71,14 @@ class ActivityAwarePolarSystem:
         )
         y_ri = c2ri(y_tf)
         x_hat_ri, p_active_tf = self.ae(y_ri, training=False)
+        z_tf = self.ae.encode(y_ri, training=False) if return_latent else None
         p_active_np = p_active_tf.numpy()           # [B, 1]
         a_hat_np    = (p_active_np > self.thresh).astype(np.float32)
 
-        # Reconstruir señal limpia desde AE
+        # Mezcla señal reconstruida por AE con señal recibida original
+        # alpha_mix=1.0 -> AE puro; alpha_mix=0.0 -> sin denoising
         y_hat_tf = ri2c(x_hat_ri)
-        y_hat_np = y_hat_tf.numpy()
+        y_hat_np = self.alpha_mix * y_hat_tf.numpy() + (1.0 - self.alpha_mix) * y_np
 
         # Decodificación solo en bloques detectados como activos
         active_idx = np.where(a_hat_np.squeeze() > 0.5)[0]
@@ -103,4 +106,25 @@ class ActivityAwarePolarSystem:
             u_hat_np[active_idx] = u_hat_sel
             c_hat_np[active_idx] = c_hat_sel
 
+        if return_latent:
+            return (
+                u_np,
+                u_hat_np,
+                c_true_np,
+                c_hat_np,
+                a_np,
+                p_active_np,
+                a_hat_np,
+                z_tf.numpy(),
+            )
         return u_np, u_hat_np, c_true_np, c_hat_np, a_np, p_active_np, a_hat_np
+
+    def __call__(self, batch_size, ebno_db):
+        return self._run(batch_size=batch_size, ebno_db=ebno_db, return_latent=False)
+
+    def sample_with_latent(self, batch_size, ebno_db):
+        """
+        Devuelve la salida estándar + representación latente z.
+        Útil para visualización del espacio latente y análisis de errores globales.
+        """
+        return self._run(batch_size=batch_size, ebno_db=ebno_db, return_latent=True)
