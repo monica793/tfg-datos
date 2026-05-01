@@ -6,6 +6,10 @@ from sionna.phy.utils import ebnodb2no
 from sionna.phy.channel import AWGN
 import numpy as np
 import random
+try:
+    import wandb
+except Exception:
+    wandb = None
 
 from models.supervised_ae import SupervisedAE
 from utils.signal import c2ri, rho_db_to_ebno_db
@@ -75,7 +79,8 @@ def make_batch(src, enc, mapper, ebno_train_db, rate_train, batch_size):
     return c2ri(y_tf), c2ri(x_tf), a_tf
 
 
-def train_ae_for_n(n, rho_db, k_train=None, valid_ks=None):
+def train_ae_for_n(n, rho_db, k_train=None, valid_ks=None,
+                   use_wandb=True, wandb_project="tfg-datos-hybrid-ae"):
     """
     Entrena el SupervisedAE para un bloque de longitud n.
     - Si valid_ks tiene varios valores, entrena en modo multi-k (generaliza en tasa).
@@ -108,6 +113,31 @@ def train_ae_for_n(n, rho_db, k_train=None, valid_ks=None):
 
     print(f"\n=== Entrenando AE | n={n} | rho={rho_db} dB | ks={valid_ks} ===")
 
+    wandb_run = None
+    if use_wandb and wandb is not None:
+        try:
+            wandb_run = wandb.init(
+                project=wandb_project,
+                reinit=True,
+                config={
+                    "n": n,
+                    "rho_db": rho_db,
+                    "valid_ks": valid_ks,
+                    "epochs": AE_EPOCHS,
+                    "steps_per_epoch": AE_STEPS_PER_EPOCH,
+                    "batch_size": AE_BATCH_SIZE,
+                    "lr": LR,
+                    "w_recon": W_RECON,
+                    "w_class": W_CLASS,
+                    "seed": SEED,
+                    "mode_tag": mode_tag,
+                },
+                name=f"ae_n{n}_rho{rho_db}_{mode_tag}",
+            )
+        except Exception as e:
+            print(f"[WARN] No se pudo iniciar wandb ({type(e).__name__}: {e}). Continúa sin logging.")
+            wandb_run = None
+
     src = BinarySource()
     const = Constellation("pam", num_bits_per_symbol=1, trainable=False)
     encoders = {k: Polar5GEncoder(k=k, n=n) for k in valid_ks}
@@ -119,6 +149,8 @@ def train_ae_for_n(n, rho_db, k_train=None, valid_ks=None):
 
     for ep in range(1, AE_EPOCHS + 1):
         total_loss = 0.0
+        total_recon = 0.0
+        total_class = 0.0
         for _ in range(AE_STEPS_PER_EPOCH):
             k_step = random.choice(valid_ks)
             rate_step = k_step / n
@@ -127,17 +159,45 @@ def train_ae_for_n(n, rho_db, k_train=None, valid_ks=None):
                                        ebno_step, rate_step, AE_BATCH_SIZE)
             with tf.GradientTape() as tape:
                 x_hat_ri, p_active = ae(y_ri, training=True)
-                loss = W_RECON * mse(x_ri, x_hat_ri) + W_CLASS * bce(a, p_active)
+                loss_recon = mse(x_ri, x_hat_ri)
+                loss_class = bce(a, p_active)
+                loss = W_RECON * loss_recon + W_CLASS * loss_class
             grads = tape.gradient(loss, ae.trainable_variables)
             opt.apply_gradients(zip(grads, ae.trainable_variables))
             total_loss += float(loss.numpy())
+            total_recon += float(loss_recon.numpy())
+            total_class += float(loss_class.numpy())
 
+        avg_loss = total_loss / AE_STEPS_PER_EPOCH
+        avg_recon = total_recon / AE_STEPS_PER_EPOCH
+        avg_class = total_class / AE_STEPS_PER_EPOCH
         if ep % 5 == 0 or ep == 1 or ep == AE_EPOCHS:
-            print(f"Epoch {ep:02d}/{AE_EPOCHS} | Loss={total_loss / AE_STEPS_PER_EPOCH:.4f}")
+            print(
+                f"Epoch {ep:02d}/{AE_EPOCHS} | "
+                f"Loss={avg_loss:.4f} | Recon={avg_recon:.4f} | Class={avg_class:.4f}"
+            )
+
+        if wandb_run is not None:
+            wandb.log({
+                "train/epoch": ep,
+                "train/loss_total": avg_loss,
+                "train/loss_recon": avg_recon,
+                "train/loss_class": avg_class,
+                "train/rho_db": float(rho_db),
+                "train/n": int(n),
+                "train/n_valid_ks": int(len(valid_ks)),
+            })
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     ae.save_weights(checkpoint_path)
     print(f"Checkpoint guardado: {checkpoint_path}")
+
+    if use_wandb and wandb is None:
+        print("[WARN] wandb no está instalado. Continúa sin logging.")
+
+    if wandb_run is not None:
+        wandb.log({"train/checkpoint_saved": 1, "train/checkpoint_path": checkpoint_path})
+        wandb.finish()
 
     ae.trainable = False
     return ae
