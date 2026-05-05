@@ -24,7 +24,7 @@ def _binomial_ci_95(num, den):
     den = int(den)
     num = int(num)
     if den <= 0:
-        return 0.0, 0.0
+        return np.nan, np.nan
     p = num / den
     margin = 1.96 * np.sqrt(max(p * (1.0 - p), 0.0) / den)
     return max(0.0, p - margin), min(1.0, p + margin)
@@ -38,16 +38,27 @@ def k_is_valid_for_5g(k, n):
         return False
 
 
+def _safe_ratio(num, den):
+    den = int(den)
+    if den <= 0:
+        return np.nan
+    return float(num) / float(den)
+
+
 def eval_pfa_pmd_pie(system, n, k, ebno_db, return_ci=False, thresh_override=None):
     """
-    Evalúa Pfa, Pmd y Pie para cualquier sistema con interfaz:
+    Evalúa Pfa, Pmd, P_IE (Lancho) y P_global para cualquier sistema con interfaz:
         system(batch_size, ebno_db) -> u, u_hat, a_true, p_active, a_hat
     Devuelve:
-      - Si return_ci=False: (R, pfa, pmd, pie)
-      - Si return_ci=True : (R, pfa, pmd, pie, pfa_ci, pmd_ci, pie_ci)
+      - Si return_ci=False: (R, p_fa, p_md, p_ie, p_global)
+      - Si return_ci=True :
+        (R, p_fa, p_md, p_ie, p_global, p_fa_ci, p_md_ci, p_ie_ci, p_global_ci)
     """
     R = k / n
-    fa = md = n_empty = n_active = inclusive_err = total = 0
+    false_alarms = missed_detections = 0
+    n_empty = n_active = 0
+    active_detected_decoding_errors = 0
+    total = 0
     old_thresh = None
 
     if thresh_override is not None and hasattr(system, "thresh"):
@@ -68,47 +79,67 @@ def eval_pfa_pmd_pie(system, n, k, ebno_db, return_ci=False, thresh_override=Non
             a_true_b = a_true.squeeze() > 0.5
             a_hat_b  = a_hat.squeeze()  > 0.5
 
-            fa       += int(np.sum(~a_true_b & a_hat_b))
-            n_empty  += int(np.sum(~a_true_b))
-            md       += int(np.sum(a_true_b & ~a_hat_b))
-            n_active += int(np.sum(a_true_b))
-
-            # Pie: error inclusivo por bloque
-            blk_err = a_true_b & ~a_hat_b
-
+            empty_mask = ~a_true_b
+            active_mask = a_true_b
+            md_mask = active_mask & ~a_hat_b
             mask_ad = a_true_b & a_hat_b
+
+            false_alarms += int(np.sum(empty_mask & a_hat_b))
+            n_empty += int(np.sum(empty_mask))
+            missed_detections += int(np.sum(md_mask))
+            n_active += int(np.sum(active_mask))
+
             if np.any(mask_ad):
                 u_ad    = u[mask_ad]
                 uhat_ad = np.clip(np.round(u_hat[mask_ad]), 0, 1)
                 blk_ad_err = np.any(u_ad != uhat_ad, axis=-1)
-                tmp = np.zeros(BATCH_SIZE_SIM, dtype=bool)
-                tmp[np.where(mask_ad)[0]] = blk_ad_err
-                blk_err = blk_err | tmp
+                active_detected_decoding_errors += int(np.sum(blk_ad_err))
 
-            blk_err       = blk_err | (~a_true_b & a_hat_b)
-            inclusive_err += int(np.sum(blk_err))
-            total         += BATCH_SIZE_SIM
+            total += int(a_true_b.shape[0])
     finally:
         if old_thresh is not None:
             system.thresh = old_thresh
 
-    pfa = fa / max(n_empty, 1)
-    pmd = md / max(n_active, 1)
-    pie = inclusive_err / max(total, 1)
+    inclusive_errors_active = missed_detections + active_detected_decoding_errors
+    global_errors = inclusive_errors_active + false_alarms
+
+    p_fa = _safe_ratio(false_alarms, n_empty)
+    p_md = _safe_ratio(missed_detections, n_active)
+    p_ie = _safe_ratio(inclusive_errors_active, n_active)
+    p_global = _safe_ratio(global_errors, total)
+
+    if n_active > 0:
+        assert np.isclose(
+            p_ie,
+            (missed_detections + active_detected_decoding_errors) / n_active
+        )
+    if n_empty > 0:
+        assert np.isclose(p_fa, false_alarms / n_empty)
+    if total > 0:
+        assert np.isclose(p_global, global_errors / total)
 
     if not return_ci:
-        return R, pfa, pmd, pie
+        return R, p_fa, p_md, p_ie, p_global
 
-    pfa_ci = _binomial_ci_95(fa, n_empty)
-    pmd_ci = _binomial_ci_95(md, n_active)
-    pie_ci = _binomial_ci_95(inclusive_err, total)
-    return R, pfa, pmd, pie, pfa_ci, pmd_ci, pie_ci
+    p_fa_ci = _binomial_ci_95(false_alarms, n_empty)
+    p_md_ci = _binomial_ci_95(missed_detections, n_active)
+    p_ie_ci = _binomial_ci_95(inclusive_errors_active, n_active)
+    p_global_ci = _binomial_ci_95(global_errors, total)
+    return R, p_fa, p_md, p_ie, p_global, p_fa_ci, p_md_ci, p_ie_ci, p_global_ci
 
 
-def run_curves_for_n(n, rho_db, make_system, label='Sistema', k_cand=None):
+def run_curves_for_n(
+    n,
+    rho_db,
+    make_system,
+    label='Sistema',
+    k_cand=None,
+    figure_path=None,
+    show_figure=True,
+):
     """
-    Barre k válidos, evalúa y genera curvas Pfa/Pmd/Pie vs R=k/n.
-    Guarda la figura en results/figures/.
+    Barre k válidos, evalúa y genera curvas Pfa/Pmd/P_IE/P_global vs R=k/n.
+    Guarda la figura en results/figures/ o en figure_path si se indica.
 
     make_system: función (k, n) -> sistema instanciado
     label:       nombre del sistema para el título
@@ -123,24 +154,25 @@ def run_curves_for_n(n, rho_db, make_system, label='Sistema', k_cand=None):
         print("[ERROR] No hay k válidos.")
         return
 
-    Rs, PFAs, PMDs, PIEs = [], [], [], []
-    PFA_CIs, PMD_CIs, PIE_CIs = [], [], []
+    Rs, PFAs, PMDs, PIEs, P_GLOBALs = [], [], [], [], []
+    PFA_CIs, PMD_CIs, PIE_CIs, P_GLOBAL_CIs = [], [], [], []
     print(f"\n=== Evaluación vs k | {label} | n={n} | rho={rho_db} dB ===")
 
     for k in valid_ks:
         try:
             ebno_db = rho_db_to_ebno_db(rho_db, k / n)
             system  = make_system(k, n)
-            R, pfa, pmd, pie, pfa_ci, pmd_ci, pie_ci = eval_pfa_pmd_pie(
+            R, p_fa, p_md, p_ie, p_global, p_fa_ci, p_md_ci, p_ie_ci, p_global_ci = eval_pfa_pmd_pie(
                 system, n, k, ebno_db, return_ci=True
             )
-            Rs.append(R); PFAs.append(pfa); PMDs.append(pmd); PIEs.append(pie)
-            PFA_CIs.append(pfa_ci); PMD_CIs.append(pmd_ci); PIE_CIs.append(pie_ci)
+            Rs.append(R); PFAs.append(p_fa); PMDs.append(p_md); PIEs.append(p_ie); P_GLOBALs.append(p_global)
+            PFA_CIs.append(p_fa_ci); PMD_CIs.append(p_md_ci); PIE_CIs.append(p_ie_ci); P_GLOBAL_CIs.append(p_global_ci)
             print(
                 f"k={k:3d} | R={R:.3f} | "
-                f"Pfa={pfa:.2e} [{pfa_ci[0]:.2e}, {pfa_ci[1]:.2e}] | "
-                f"Pmd={pmd:.2e} [{pmd_ci[0]:.2e}, {pmd_ci[1]:.2e}] | "
-                f"Pie={pie:.2e} [{pie_ci[0]:.2e}, {pie_ci[1]:.2e}]"
+                f"P_FA={p_fa:.2e} [{p_fa_ci[0]:.2e}, {p_fa_ci[1]:.2e}] | "
+                f"P_MD={p_md:.2e} [{p_md_ci[0]:.2e}, {p_md_ci[1]:.2e}] | "
+                f"P_IE={p_ie:.2e} [{p_ie_ci[0]:.2e}, {p_ie_ci[1]:.2e}] | "
+                f"P_global={p_global:.2e} [{p_global_ci[0]:.2e}, {p_global_ci[1]:.2e}]"
             )
         except Exception as e:
             print(f"[skip] k={k} -> {type(e).__name__}: {e}")
@@ -149,12 +181,20 @@ def run_curves_for_n(n, rho_db, make_system, label='Sistema', k_cand=None):
         print("[ERROR] No se pudo evaluar ningún k.")
         return
 
-    _plot_and_save(Rs, PFAs, PMDs, PIEs,
-                   title=f"{label} | n={n} | rho={rho_db} dB | p_empty={P_EMPTY}",
-                   fname=f"results/figures/{label.replace(' ','_')}_n{n}_rho{rho_db}.png",
-                   pfa_cis=PFA_CIs, pmd_cis=PMD_CIs, pie_cis=PIE_CIs)
+    if figure_path is None:
+        figure_path = f"results/figures/{label.replace(' ','_')}_n{n}_rho{rho_db}.png"
+    _plot_and_save(
+        Rs, PFAs, PMDs, PIEs, P_GLOBALs,
+        title=f"{label} | n={n} | rho={rho_db} dB | p_empty={P_EMPTY}",
+        fname=figure_path,
+        pfa_cis=PFA_CIs,
+        pmd_cis=PMD_CIs,
+        pie_cis=PIE_CIs,
+        p_global_cis=P_GLOBAL_CIs,
+        show=show_figure,
+    )
 
-    return Rs, PFAs, PMDs, PIEs
+    return Rs, PFAs, PMDs, PIEs, P_GLOBALs
 
 
 def plot_comparison(n, rho_db, systems: dict):
@@ -165,23 +205,23 @@ def plot_comparison(n, rho_db, systems: dict):
     """
     from utils.signal import rho_db_to_ebno_db
 
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-    titles = ["P_FA", "P_MD", "P_IE (inclusivo)"]
+    fig, axes = plt.subplots(1, 4, figsize=(19, 5))
+    titles = ["P_FA", "P_MD", "P_IE", "P_global"]
 
     for label, make_system in systems.items():
         valid_ks = [k for k in K_CAND if k < n and k_is_valid_for_5g(k, n)]
-        Rs, PFAs, PMDs, PIEs = [], [], [], []
+        Rs, PFAs, PMDs, PIEs, P_GLOBALs = [], [], [], [], []
 
         for k in valid_ks:
             try:
                 ebno_db = rho_db_to_ebno_db(rho_db, k / n)
                 system  = make_system(k, n)
-                R, pfa, pmd, pie = eval_pfa_pmd_pie(system, n, k, ebno_db)
-                Rs.append(R); PFAs.append(pfa); PMDs.append(pmd); PIEs.append(pie)
+                R, p_fa, p_md, p_ie, p_global = eval_pfa_pmd_pie(system, n, k, ebno_db)
+                Rs.append(R); PFAs.append(p_fa); PMDs.append(p_md); PIEs.append(p_ie); P_GLOBALs.append(p_global)
             except Exception as e:
                 print(f"[skip] {label} k={k} -> {e}")
 
-        for ax, vals in zip(axes, [PFAs, PMDs, PIEs]):
+        for ax, vals in zip(axes, [PFAs, PMDs, PIEs, P_GLOBALs]):
             ax.semilogy(Rs, vals, marker='o', label=label)
 
     for ax, title in zip(axes, titles):
@@ -201,13 +241,15 @@ def plot_comparison(n, rho_db, systems: dict):
     plt.show()
 
 
-def _plot_and_save(Rs, PFAs, PMDs, PIEs, title, fname,
-                   pfa_cis=None, pmd_cis=None, pie_cis=None):
+def _plot_and_save(Rs, PFAs, PMDs, PIEs, P_GLOBALs, title, fname,
+                   pfa_cis=None, pmd_cis=None, pie_cis=None, p_global_cis=None,
+                   show=True):
     plt.figure(figsize=(9, 5))
     for vals, cis, marker, label in [
         (PFAs, pfa_cis, "o", "P_FA"),
         (PMDs, pmd_cis, "s", "P_MD"),
-        (PIEs, pie_cis, "^", "P_IE (inclusivo)"),
+        (PIEs, pie_cis, "^", "P_IE"),
+        (P_GLOBALs, p_global_cis, "d", "P_global"),
     ]:
         if cis is not None and len(cis) == len(vals):
             low = np.array([c[0] for c in cis], dtype=float)
@@ -224,17 +266,30 @@ def _plot_and_save(Rs, PFAs, PMDs, PIEs, title, fname,
     plt.ylabel("Probabilidad")
     plt.title(title)
     plt.legend()
-    os.makedirs("results/figures", exist_ok=True)
+    os.makedirs(os.path.dirname(fname) or ".", exist_ok=True)
     plt.savefig(fname, dpi=150, bbox_inches="tight")
     print(f"Figura guardada: {fname}")
-    plt.show()
+    if show:
+        plt.show()
+    else:
+        plt.close()
 
 
-def run_threshold_sweep(n, k, ebno_db, make_system, label="Sistema", thresholds=None):
+def run_threshold_sweep(
+    n,
+    k,
+    ebno_db,
+    make_system,
+    label="Sistema",
+    thresholds=None,
+    best_by="p_ie",
+    figure_dir=None,
+    show_figures=True,
+):
     """
     Barre umbral tau de actividad y genera:
       - ROC (P_MD vs P_FA)
-      - P_IE vs tau
+      - P_IE y P_global vs tau
 
     Nota: se reevalúa el sistema para cada tau para respetar la lógica
     de decodificación condicionada por actividad.
@@ -243,21 +298,28 @@ def run_threshold_sweep(n, k, ebno_db, make_system, label="Sistema", thresholds=
         thresholds = np.linspace(0.05, 0.95, 19)
     thresholds = [float(t) for t in thresholds]
 
-    PFAs, PMDs, PIEs = [], [], []
+    if best_by not in {"p_ie", "p_global"}:
+        raise ValueError("best_by debe ser 'p_ie' o 'p_global'")
+
+    PFAs, PMDs, PIEs, P_GLOBALs = [], [], [], []
     print(f"\n=== Barrido de umbral | {label} | n={n} | k={k} | Eb/No={ebno_db:.2f} dB ===")
 
     for tau in thresholds:
         system = make_system(k, n)
-        _, pfa, pmd, pie = eval_pfa_pmd_pie(system, n, k, ebno_db, thresh_override=tau)
-        PFAs.append(pfa); PMDs.append(pmd); PIEs.append(pie)
-        print(f"tau={tau:.2f} | Pfa={pfa:.2e} | Pmd={pmd:.2e} | Pie={pie:.2e}")
+        _, p_fa, p_md, p_ie, p_global = eval_pfa_pmd_pie(system, n, k, ebno_db, thresh_override=tau)
+        PFAs.append(p_fa); PMDs.append(p_md); PIEs.append(p_ie); P_GLOBALs.append(p_global)
+        print(f"tau={tau:.2f} | P_FA={p_fa:.2e} | P_MD={p_md:.2e} | P_IE={p_ie:.2e} | P_global={p_global:.2e}")
 
-    best_idx = int(np.argmin(PIEs))
+    metric_for_best = PIEs if best_by == "p_ie" else P_GLOBALs
+    best_idx = int(np.nanargmin(np.array(metric_for_best, dtype=float)))
     best_tau = thresholds[best_idx]
-    best_pie = PIEs[best_idx]
-    print(f"[BEST] tau*={best_tau:.3f} -> P_IE={best_pie:.2e}")
+    best_metric = metric_for_best[best_idx]
+    print(f"[BEST] criterio={best_by} | tau*={best_tau:.3f} -> {best_by}={best_metric:.2e}")
 
-    os.makedirs("results/figures", exist_ok=True)
+    if figure_dir is None:
+        figure_dir = "results/figures"
+    os.makedirs(figure_dir, exist_ok=True)
+    safe_label = label.replace(' ', '_')
 
     # ROC: eje x P_FA, eje y P_MD
     plt.figure(figsize=(6.5, 5))
@@ -270,23 +332,30 @@ def run_threshold_sweep(n, k, ebno_db, make_system, label="Sistema", thresholds=
     plt.xlabel("P_FA")
     plt.ylabel("P_MD")
     plt.title(f"ROC | {label} | n={n} | k={k} | Eb/No={ebno_db:.2f} dB")
-    fname_roc = f"results/figures/roc_{label.replace(' ','_')}_n{n}_k{k}_ebno{ebno_db}.png"
+    fname_roc = os.path.join(figure_dir, f"roc_{safe_label}_n{n}_k{k}_ebno{ebno_db}.png")
     plt.savefig(fname_roc, dpi=150, bbox_inches="tight")
     print(f"Figura guardada: {fname_roc}")
-    plt.show()
+    if show_figures:
+        plt.show()
+    else:
+        plt.close()
 
-    # P_IE vs tau
+    # P_IE y P_global vs tau
     plt.figure(figsize=(6.5, 5))
     plt.semilogy(thresholds, PIEs, marker="o", label="P_IE")
+    plt.semilogy(thresholds, P_GLOBALs, marker="s", label="P_global")
     plt.axvline(best_tau, color="r", linestyle="--", label=f"tau*={best_tau:.2f}")
     plt.grid(True, which="both", alpha=0.35)
     plt.xlabel("Umbral tau")
-    plt.ylabel("P_IE")
-    plt.title(f"P_IE vs tau | {label} | n={n} | k={k} | Eb/No={ebno_db:.2f} dB")
+    plt.ylabel("Probabilidad")
+    plt.title(f"P_IE/P_global vs tau | {label} | n={n} | k={k} | Eb/No={ebno_db:.2f} dB")
     plt.legend()
-    fname_pie = f"results/figures/pie_vs_tau_{label.replace(' ','_')}_n{n}_k{k}_ebno{ebno_db}.png"
+    fname_pie = os.path.join(figure_dir, f"pie_pglobal_vs_tau_{safe_label}_n{n}_k{k}_ebno{ebno_db}.png")
     plt.savefig(fname_pie, dpi=150, bbox_inches="tight")
     print(f"Figura guardada: {fname_pie}")
-    plt.show()
+    if show_figures:
+        plt.show()
+    else:
+        plt.close()
 
-    return thresholds, PFAs, PMDs, PIEs, best_tau
+    return thresholds, PFAs, PMDs, PIEs, P_GLOBALs, best_tau

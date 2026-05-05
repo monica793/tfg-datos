@@ -69,11 +69,14 @@ def run_all(experiments=None, n=N_FIXED, rho_dbs=None, ae_epochs=20,
             out = run_curves_for_n(n=n, rho_db=rho_db, make_system=make_system,
                                    label=f"Hibrido_{name}", k_cand=valid_ks)
             if out:
-                Rs, PFAs, PMDs, PIEs = out
-                best = int(min(range(len(PIEs)), key=lambda i: PIEs[i]))
+                Rs, PFAs, PMDs, PIEs, P_GLOBALs = out
+                best_pie = int(min(range(len(PIEs)), key=lambda i: PIEs[i]))
+                best_p_global = int(min(range(len(P_GLOBALs)), key=lambda i: P_GLOBALs[i]))
                 exp_record["results"][str(rho_db)] = {
-                    "best_pie": float(PIEs[best]),
-                    "best_R": float(Rs[best]),
+                    "best_pie": float(PIEs[best_pie]),
+                    "best_r_pie": float(Rs[best_pie]),
+                    "best_p_global": float(P_GLOBALs[best_p_global]),
+                    "best_r_p_global": float(Rs[best_p_global]),
                 }
 
         summary["experiments"].append(exp_record)

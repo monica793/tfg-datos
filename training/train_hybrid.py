@@ -79,8 +79,24 @@ def make_batch(src, enc, mapper, ebno_train_db, rate_train, batch_size):
     return c2ri(y_tf), c2ri(x_tf), a_tf
 
 
-def train_ae_for_n(n, rho_db, k_train=None, valid_ks=None,
-                   use_wandb=True, wandb_project="tfg-datos-hybrid-ae"):
+def train_ae_for_n(
+    n,
+    rho_db,
+    k_train=None,
+    valid_ks=None,
+    use_wandb=True,
+    wandb_project="tfg-datos-hybrid-ae",
+    checkpoint_tag=None,
+    latent_dim=64,
+    hidden_dim=256,
+    dropout=0.1,
+    ae_epochs=None,
+    ae_steps_per_epoch=None,
+    ae_batch_size=None,
+    lr=None,
+    w_recon=None,
+    w_class=None,
+):
     """
     Entrena el SupervisedAE para un bloque de longitud n.
     - Si valid_ks tiene varios valores, entrena en modo multi-k (generaliza en tasa).
@@ -98,9 +114,18 @@ def train_ae_for_n(n, rho_db, k_train=None, valid_ks=None,
         valid_ks = [int(k_train)]
 
     mode_tag = "multik" if len(valid_ks) > 1 else f"k{valid_ks[0]}"
+    if checkpoint_tag is not None and str(checkpoint_tag).strip():
+        mode_tag = f"{mode_tag}_{str(checkpoint_tag).strip().replace(' ', '_')}"
     checkpoint_path = os.path.join(CHECKPOINT_DIR, f"ae_n{n}_rho{rho_db}_{mode_tag}.weights.h5")
 
-    ae = SupervisedAE(n=n, latent_dim=64, hidden_dim=256, dropout=0.1)
+    ae_epochs = int(AE_EPOCHS if ae_epochs is None else ae_epochs)
+    ae_steps_per_epoch = int(AE_STEPS_PER_EPOCH if ae_steps_per_epoch is None else ae_steps_per_epoch)
+    ae_batch_size = int(AE_BATCH_SIZE if ae_batch_size is None else ae_batch_size)
+    lr = float(LR if lr is None else lr)
+    w_recon = float(W_RECON if w_recon is None else w_recon)
+    w_class = float(W_CLASS if w_class is None else w_class)
+
+    ae = SupervisedAE(n=n, latent_dim=int(latent_dim), hidden_dim=int(hidden_dim), dropout=float(dropout))
 
     if os.path.exists(checkpoint_path):
         # Keras requiere un forward pass antes de cargar pesos
@@ -123,12 +148,15 @@ def train_ae_for_n(n, rho_db, k_train=None, valid_ks=None,
                     "n": n,
                     "rho_db": rho_db,
                     "valid_ks": valid_ks,
-                    "epochs": AE_EPOCHS,
-                    "steps_per_epoch": AE_STEPS_PER_EPOCH,
-                    "batch_size": AE_BATCH_SIZE,
-                    "lr": LR,
-                    "w_recon": W_RECON,
-                    "w_class": W_CLASS,
+                    "epochs": ae_epochs,
+                    "steps_per_epoch": ae_steps_per_epoch,
+                    "batch_size": ae_batch_size,
+                    "lr": lr,
+                    "w_recon": w_recon,
+                    "w_class": w_class,
+                    "latent_dim": int(latent_dim),
+                    "hidden_dim": int(hidden_dim),
+                    "dropout": float(dropout),
                     "seed": SEED,
                     "mode_tag": mode_tag,
                 },
@@ -145,35 +173,35 @@ def train_ae_for_n(n, rho_db, k_train=None, valid_ks=None,
 
     bce = tf.keras.losses.BinaryCrossentropy()
     mse = tf.keras.losses.MeanSquaredError()
-    opt = tf.keras.optimizers.Adam(learning_rate=LR)
+    opt = tf.keras.optimizers.Adam(learning_rate=lr)
 
-    for ep in range(1, AE_EPOCHS + 1):
+    for ep in range(1, ae_epochs + 1):
         total_loss = 0.0
         total_recon = 0.0
         total_class = 0.0
-        for _ in range(AE_STEPS_PER_EPOCH):
+        for _ in range(ae_steps_per_epoch):
             k_step = random.choice(valid_ks)
             rate_step = k_step / n
             ebno_step = rho_db_to_ebno_db(rho_db, rate_step)
             y_ri, x_ri, a = make_batch(src, encoders[k_step], mappers[k_step],
-                                       ebno_step, rate_step, AE_BATCH_SIZE)
+                                       ebno_step, rate_step, ae_batch_size)
             with tf.GradientTape() as tape:
                 x_hat_ri, p_active = ae(y_ri, training=True)
                 loss_recon = mse(x_ri, x_hat_ri)
                 loss_class = bce(a, p_active)
-                loss = W_RECON * loss_recon + W_CLASS * loss_class
+                loss = w_recon * loss_recon + w_class * loss_class
             grads = tape.gradient(loss, ae.trainable_variables)
             opt.apply_gradients(zip(grads, ae.trainable_variables))
             total_loss += float(loss.numpy())
             total_recon += float(loss_recon.numpy())
             total_class += float(loss_class.numpy())
 
-        avg_loss = total_loss / AE_STEPS_PER_EPOCH
-        avg_recon = total_recon / AE_STEPS_PER_EPOCH
-        avg_class = total_class / AE_STEPS_PER_EPOCH
-        if ep % 5 == 0 or ep == 1 or ep == AE_EPOCHS:
+        avg_loss = total_loss / ae_steps_per_epoch
+        avg_recon = total_recon / ae_steps_per_epoch
+        avg_class = total_class / ae_steps_per_epoch
+        if ep % 5 == 0 or ep == 1 or ep == ae_epochs:
             print(
-                f"Epoch {ep:02d}/{AE_EPOCHS} | "
+                f"Epoch {ep:02d}/{ae_epochs} | "
                 f"Loss={avg_loss:.4f} | Recon={avg_recon:.4f} | Class={avg_class:.4f}"
             )
 
