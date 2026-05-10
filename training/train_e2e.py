@@ -84,16 +84,12 @@ def train_e2e(k: int, n: int, rho_db: float):
             # RX
             u_hat, p_active = decoder(y)          # [B,k], [B,1]
 
-            """# Pérdida solo sobre bloques activos para los bits
-            mask = a_pt.squeeze() > 0.5
-            if mask.sum() > 0:
+            # Bits: solo ranuras con transmisión (A=1). En A=0 solo hay ruido; no hay mensaje que decodificar.
+            mask = a_pt.squeeze(-1) > 0.5
+            if mask.any():
                 loss_bits = bce(u_hat[mask], u_pt[mask])
             else:
-                loss_bits = torch.tensor(0.0, device=device)"""
-
-            # Pérdida de bits sobre TODOS los bloques activos
-            # (no filtramos por máscara para que el gradiente siempre fluya)
-            loss_bits = bce(u_hat, u_pt)
+                loss_bits = torch.zeros((), device=device)
 
             loss_act  = bce(p_active, a_pt)
             loss      = W_BITS * loss_bits + W_ACT * loss_act
@@ -118,6 +114,32 @@ def train_e2e(k: int, n: int, rho_db: float):
 
     encoder.eval(); decoder.eval()
     return encoder, decoder
+
+
+def train_e2e_sweep_k(
+    ks: list[int],
+    n: int,
+    rho_dbs: list[float] | None = None,
+) -> dict[float, dict[int, tuple["E2EEncoder", "E2EDecoder"]]]:
+    """
+    Entrena (o carga) un par encoder/decoder por cada (k, rho_db).
+    Orden: para cada k se completan todos los rho_db antes de pasar al siguiente k.
+
+    Checkpoints: results/checkpoints/e2e_k{k}_n{n}_rho{rho_db}.pt
+
+    Devuelve: e2e_models[rho_db][k] = (encoder, decoder)
+    """
+    if rho_dbs is None:
+        rho_dbs = list(RHO_DBS)
+    out: dict[float, dict[int, tuple[E2EEncoder, E2EDecoder]]] = {}
+    for rho_db in rho_dbs:
+        out[float(rho_db)] = {}
+    for k in ks:
+        for rho_db in rho_dbs:
+            rho_f = float(rho_db)
+            enc, dec = train_e2e(k=int(k), n=int(n), rho_db=rho_f)
+            out[rho_f][int(k)] = (enc, dec)
+    return out
 
 
 if __name__ == "__main__":

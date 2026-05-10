@@ -1,7 +1,8 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from sionna.phy.fec.polar import Polar5GEncoder
+
+from utils.representative_ks import k_is_valid_for_5g, pick_representative_ks
 
 
 # ============================================================
@@ -28,14 +29,6 @@ def _binomial_ci_95(num, den):
     p = num / den
     margin = 1.96 * np.sqrt(max(p * (1.0 - p), 0.0) / den)
     return max(0.0, p - margin), min(1.0, p + margin)
-
-
-def k_is_valid_for_5g(k, n):
-    try:
-        Polar5GEncoder(k=int(k), n=int(n))
-        return True
-    except Exception:
-        return False
 
 
 def _safe_ratio(num, den):
@@ -136,6 +129,7 @@ def run_curves_for_n(
     k_cand=None,
     figure_path=None,
     show_figure=True,
+    polar_k_constraint=True,
 ):
     """
     Barre k válidos, evalúa y genera curvas Pfa/Pmd/P_IE/P_global vs R=k/n.
@@ -143,13 +137,18 @@ def run_curves_for_n(
 
     make_system: función (k, n) -> sistema instanciado
     label:       nombre del sistema para el título
+    polar_k_constraint: si True, solo k admitidos por Polar5G(n) (como el híbrido).
+        False para E2E u otros sistemas donde cualquier k < n es válido.
     """
     from utils.signal import rho_db_to_ebno_db
 
     if k_cand is None:
         k_cand = K_CAND
 
-    valid_ks = [k for k in k_cand if k < n and k_is_valid_for_5g(k, n)]
+    if polar_k_constraint:
+        valid_ks = [k for k in k_cand if k < n and k_is_valid_for_5g(k, n)]
+    else:
+        valid_ks = [k for k in k_cand if k < n]
     if not valid_ks:
         print("[ERROR] No hay k válidos.")
         return
@@ -197,19 +196,27 @@ def run_curves_for_n(
     return Rs, PFAs, PMDs, PIEs, P_GLOBALs
 
 
-def plot_comparison(n, rho_db, systems: dict):
+def plot_comparison(n, rho_db, systems: dict, k_cand=None, polar_k_constraint=True):
     """
     Genera una gráfica comparativa con múltiples sistemas.
 
     systems: dict {nombre: make_system_fn}  donde make_system_fn(k,n) -> sistema
+    k_cand: lista de k a barrer (por defecto K_CAND completo).
+    polar_k_constraint: igual que en run_curves_for_n.
     """
     from utils.signal import rho_db_to_ebno_db
+
+    if k_cand is None:
+        k_cand = K_CAND
 
     fig, axes = plt.subplots(1, 4, figsize=(19, 5))
     titles = ["P_FA", "P_MD", "P_IE", "P_global"]
 
     for label, make_system in systems.items():
-        valid_ks = [k for k in K_CAND if k < n and k_is_valid_for_5g(k, n)]
+        if polar_k_constraint:
+            valid_ks = [k for k in k_cand if k < n and k_is_valid_for_5g(k, n)]
+        else:
+            valid_ks = [k for k in k_cand if k < n]
         Rs, PFAs, PMDs, PIEs, P_GLOBALs = [], [], [], [], []
 
         for k in valid_ks:
