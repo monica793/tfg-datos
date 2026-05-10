@@ -2,7 +2,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-from utils.representative_ks import k_is_valid_for_5g, pick_representative_ks
+from utils.representative_ks import pick_representative_ks
 
 
 # ============================================================
@@ -15,6 +15,20 @@ RHO_DBS        = [0.0, 3.0]
 K_CAND         = list(range(5, N_FIXED + 1, 5))
 BATCH_SIZE_SIM = 3000
 N_BATCHES_EVAL = 40
+
+
+def k_is_valid_for_5g(k, n):
+    """
+    k admisible para Polar5G(n). Solo se usa con polar_k_constraint=True (híbrido).
+    Importa Sionna de forma diferida para no cargarlo en rutas solo E2E.
+    """
+    try:
+        from sionna.phy.fec.polar import Polar5GEncoder
+
+        Polar5GEncoder(k=int(k), n=int(n))
+        return True
+    except Exception:
+        return False
 
 
 def _binomial_ci_95(num, den):
