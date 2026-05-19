@@ -144,15 +144,19 @@ def run_curves_for_n(
     figure_path=None,
     show_figure=True,
     polar_k_constraint=True,
+    plot_p_global=False,
+    print_p_global=True,
 ):
     """
-    Barre k válidos, evalúa y genera curvas Pfa/Pmd/P_IE/P_global vs R=k/n.
+    Barre k válidos, evalúa y genera curvas P_FA, P_MD, P_IE (y opcionalmente P_global) vs R=k/n.
     Guarda la figura en results/figures/ o en figure_path si se indica.
 
     make_system: función (k, n) -> sistema instanciado
     label:       nombre del sistema para el título
     polar_k_constraint: si True, solo k admitidos por Polar5G(n) (como el híbrido).
         False para E2E u otros sistemas donde cualquier k < n es válido.
+    plot_p_global: si True, añade P_global a la figura (no recomendado para la memoria).
+    print_p_global: si True, imprime P_global en consola aunque no se dibuje.
     """
     from utils.signal import rho_db_to_ebno_db
 
@@ -180,13 +184,18 @@ def run_curves_for_n(
             )
             Rs.append(R); PFAs.append(p_fa); PMDs.append(p_md); PIEs.append(p_ie); P_GLOBALs.append(p_global)
             PFA_CIs.append(p_fa_ci); PMD_CIs.append(p_md_ci); PIE_CIs.append(p_ie_ci); P_GLOBAL_CIs.append(p_global_ci)
-            print(
+            line = (
                 f"k={k:3d} | R={R:.3f} | "
                 f"P_FA={p_fa:.2e} [{p_fa_ci[0]:.2e}, {p_fa_ci[1]:.2e}] | "
                 f"P_MD={p_md:.2e} [{p_md_ci[0]:.2e}, {p_md_ci[1]:.2e}] | "
-                f"P_IE={p_ie:.2e} [{p_ie_ci[0]:.2e}, {p_ie_ci[1]:.2e}] | "
-                f"P_global={p_global:.2e} [{p_global_ci[0]:.2e}, {p_global_ci[1]:.2e}]"
+                f"P_IE={p_ie:.2e} [{p_ie_ci[0]:.2e}, {p_ie_ci[1]:.2e}]"
             )
+            if print_p_global:
+                line += (
+                    f" | P_global={p_global:.2e} "
+                    f"[{p_global_ci[0]:.2e}, {p_global_ci[1]:.2e}]"
+                )
+            print(line)
         except Exception as e:
             print(f"[skip] k={k} -> {type(e).__name__}: {e}")
 
@@ -203,7 +212,8 @@ def run_curves_for_n(
         pfa_cis=PFA_CIs,
         pmd_cis=PMD_CIs,
         pie_cis=PIE_CIs,
-        p_global_cis=P_GLOBAL_CIs,
+        p_global_cis=P_GLOBAL_CIs if plot_p_global else None,
+        plot_p_global=plot_p_global,
         show=show_figure,
     )
 
@@ -264,14 +274,16 @@ def plot_comparison(n, rho_db, systems: dict, k_cand=None, polar_k_constraint=Tr
 
 def _plot_and_save(Rs, PFAs, PMDs, PIEs, P_GLOBALs, title, fname,
                    pfa_cis=None, pmd_cis=None, pie_cis=None, p_global_cis=None,
-                   show=True):
+                   plot_p_global=False, show=True):
     plt.figure(figsize=(9, 5))
-    for vals, cis, marker, label in [
+    series = [
         (PFAs, pfa_cis, "o", "P_FA"),
         (PMDs, pmd_cis, "s", "P_MD"),
         (PIEs, pie_cis, "^", "P_IE"),
-        (P_GLOBALs, p_global_cis, "d", "P_global"),
-    ]:
+    ]
+    if plot_p_global:
+        series.append((P_GLOBALs, p_global_cis, "d", "P_global"))
+    for vals, cis, marker, label in series:
         if cis is not None and len(cis) == len(vals):
             low = np.array([c[0] for c in cis], dtype=float)
             high = np.array([c[1] for c in cis], dtype=float)

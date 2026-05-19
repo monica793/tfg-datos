@@ -1,3 +1,5 @@
+import csv
+import json
 import os
 import tensorflow as tf
 from sionna.phy.mapping import Constellation, Mapper, BinarySource
@@ -31,6 +33,7 @@ W_RECON            = 1.0
 W_CLASS            = 10.0
 
 CHECKPOINT_DIR     = "results/checkpoints/"
+TRAINING_LOG_DIR   = "results/training_logs"
 SEED               = 42
 
 random.seed(SEED)
@@ -79,6 +82,23 @@ def make_batch(src, enc, mapper, ebno_train_db, rate_train, batch_size):
     return c2ri(y_tf), c2ri(x_tf), a_tf
 
 
+def _save_training_history_csv(history: list[dict], path: str) -> None:
+    if not history:
+        return
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fieldnames = list(history[0].keys())
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(history)
+
+
+def _save_training_config_json(config: dict, path: str) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+
+
 def train_ae_for_n(
     n,
     rho_db,
@@ -86,6 +106,7 @@ def train_ae_for_n(
     valid_ks=None,
     use_wandb=True,
     wandb_project="tfg-datos-hybrid-ae",
+    force_retrain=False,
     checkpoint_tag=None,
     latent_dim=64,
     hidden_dim=256,
@@ -101,7 +122,8 @@ def train_ae_for_n(
     Entrena el SupervisedAE para un bloque de longitud n.
     - Si valid_ks tiene varios valores, entrena en modo multi-k (generaliza en tasa).
     - Si no, usa k_train o el k central válido como fallback.
-    Si ya existe un checkpoint lo carga directamente sin reentrenar.
+    Si ya existe un checkpoint lo carga directamente sin reentrenar,
+    salvo que force_retrain=True (útil para repetir entrenamiento con W&B).
     """
     if valid_ks is None:
         valid_ks = [k for k in K_CAND if k < n and k_is_valid_for_5g(k, n)]
@@ -127,16 +149,51 @@ def train_ae_for_n(
 
     ae = SupervisedAE(n=n, latent_dim=int(latent_dim), hidden_dim=int(hidden_dim), dropout=float(dropout))
 
-    if os.path.exists(checkpoint_path):
+    run_stem = f"ae_n{n}_rho{rho_db}_{mode_tag}"
+    history_csv_path = os.path.join(TRAINING_LOG_DIR, f"{run_stem}_history.csv")
+    config_json_path = os.path.join(TRAINING_LOG_DIR, f"{run_stem}_config.json")
+
+    training_config = {
+        "model": "SupervisedAE",
+        "n": int(n),
+        "rho_db": float(rho_db),
+        "p_empty": float(P_EMPTY),
+        "valid_ks": valid_ks,
+        "training_mode": mode_tag,
+        "epochs": ae_epochs,
+        "steps_per_epoch": ae_steps_per_epoch,
+        "batch_size": ae_batch_size,
+        "optimizer": "Adam",
+        "lr": lr,
+        "w_recon": w_recon,
+        "w_class": w_class,
+        "loss_recon": "MSE(x, x_hat)",
+        "loss_class": "BCE(a, p_active)",
+        "latent_dim": int(latent_dim),
+        "hidden_dim": int(hidden_dim),
+        "dropout": float(dropout),
+        "seed": SEED,
+        "checkpoint_path": checkpoint_path,
+        "snr_convention": "fixed rho_db per symbol; ebno_db = rho_db - 10*log10(k/n) per step",
+    }
+
+    if os.path.exists(checkpoint_path) and not force_retrain:
         # Keras requiere un forward pass antes de cargar pesos
         dummy = tf.zeros([1, n, 2])
         ae(dummy, training=False)
         ae.load_weights(checkpoint_path)
         ae.trainable = False
         print(f"Checkpoint cargado: {checkpoint_path}")
+        if os.path.exists(history_csv_path):
+            print(f"Historial de entrenamiento: {history_csv_path}")
         return ae
 
+    if force_retrain and os.path.exists(checkpoint_path):
+        print(f"[force_retrain] Se ignora checkpoint existente: {checkpoint_path}")
+
     print(f"\n=== Entrenando AE | n={n} | rho={rho_db} dB | ks={valid_ks} ===")
+    _save_training_config_json(training_config, config_json_path)
+    print(f"Config guardada: {config_json_path}")
 
     wandb_run = None
     if use_wandb and wandb is not None:
@@ -144,23 +201,9 @@ def train_ae_for_n(
             wandb_run = wandb.init(
                 project=wandb_project,
                 reinit=True,
-                config={
-                    "n": n,
-                    "rho_db": rho_db,
-                    "valid_ks": valid_ks,
-                    "epochs": ae_epochs,
-                    "steps_per_epoch": ae_steps_per_epoch,
-                    "batch_size": ae_batch_size,
-                    "lr": lr,
-                    "w_recon": w_recon,
-                    "w_class": w_class,
-                    "latent_dim": int(latent_dim),
-                    "hidden_dim": int(hidden_dim),
-                    "dropout": float(dropout),
-                    "seed": SEED,
-                    "mode_tag": mode_tag,
-                },
-                name=f"ae_n{n}_rho{rho_db}_{mode_tag}",
+                config=training_config,
+                tags=["supervised_ae", mode_tag, f"rho_{rho_db}"],
+                name=run_stem,
             )
         except Exception as e:
             print(f"[WARN] No se pudo iniciar wandb ({type(e).__name__}: {e}). Continúa sin logging.")
@@ -174,6 +217,8 @@ def train_ae_for_n(
     bce = tf.keras.losses.BinaryCrossentropy()
     mse = tf.keras.losses.MeanSquaredError()
     opt = tf.keras.optimizers.Adam(learning_rate=lr)
+
+    history: list[dict] = []
 
     for ep in range(1, ae_epochs + 1):
         total_loss = 0.0
@@ -205,16 +250,28 @@ def train_ae_for_n(
                 f"Loss={avg_loss:.4f} | Recon={avg_recon:.4f} | Class={avg_class:.4f}"
             )
 
+        row = {
+            "epoch": ep,
+            "loss_total": avg_loss,
+            "loss_recon": avg_recon,
+            "loss_class": avg_class,
+            "loss_weighted_recon": w_recon * avg_recon,
+            "loss_weighted_class": w_class * avg_class,
+        }
+        history.append(row)
+
         if wandb_run is not None:
             wandb.log({
-                "train/epoch": ep,
+                "epoch": ep,
                 "train/loss_total": avg_loss,
                 "train/loss_recon": avg_recon,
                 "train/loss_class": avg_class,
-                "train/rho_db": float(rho_db),
-                "train/n": int(n),
-                "train/n_valid_ks": int(len(valid_ks)),
+                "train/loss_weighted_recon": row["loss_weighted_recon"],
+                "train/loss_weighted_class": row["loss_weighted_class"],
             })
+
+    _save_training_history_csv(history, history_csv_path)
+    print(f"Historial guardado: {history_csv_path}")
 
     os.makedirs(CHECKPOINT_DIR, exist_ok=True)
     ae.save_weights(checkpoint_path)
@@ -232,6 +289,21 @@ def train_ae_for_n(
 
 
 if __name__ == "__main__":
-    for rho_db in RHO_DBS:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Entrena SupervisedAE multi-k (híbrido).")
+    parser.add_argument("--rho-db", type=float, default=None, help="SNR rho en dB (default: 0 y 3).")
+    parser.add_argument("--force-retrain", action="store_true", help="Ignora checkpoint y reentrena.")
+    parser.add_argument("--no-wandb", action="store_true", help="Desactiva Weights & Biases.")
+    args = parser.parse_args()
+
+    rho_list = [args.rho_db] if args.rho_db is not None else RHO_DBS
+    for rho_db in rho_list:
         valid_ks = [k for k in K_CAND if k < N_FIXED and k_is_valid_for_5g(k, N_FIXED)]
-        train_ae_for_n(n=N_FIXED, rho_db=rho_db, valid_ks=valid_ks)
+        train_ae_for_n(
+            n=N_FIXED,
+            rho_db=rho_db,
+            valid_ks=valid_ks,
+            use_wandb=not args.no_wandb,
+            force_retrain=args.force_retrain,
+        )
