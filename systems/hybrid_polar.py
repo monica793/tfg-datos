@@ -128,3 +128,45 @@ class ActivityAwarePolarSystem:
         Útil para visualización del espacio latente y análisis de errores globales.
         """
         return self._run(batch_size=batch_size, ebno_db=ebno_db, return_latent=True)
+
+    def sample_signal_chain(self, batch_size: int, ebno_db: float):
+        """
+        Ejecuta TX → canal AWGN → AE y devuelve las señales intermedias
+        sin llegar a la decodificación Polar.
+
+        Parámetros
+        ----------
+        batch_size : número de paquetes a simular
+        ebno_db    : Eb/No en dB (usar rho_db_to_ebno_db para convertir desde rho)
+
+        Retorna
+        -------
+        x_clean  : señales BPSK originales antes de la máscara de actividad,
+                   shape complejo compatible con y_noisy y x_hat (np.ndarray)
+        y_noisy  : señal ruidosa recibida del canal, mismo shape (np.ndarray)
+        x_hat    : señal reconstruida / denoisada por el AE, mismo shape (np.ndarray)
+        a_np     : vector de actividad ground-truth [batch_size, 1] (np.ndarray float32)
+        """
+        a_np = (np.random.rand(batch_size, 1) > self.p_empty).astype(np.float32)
+
+        u_pt      = self.source([batch_size, self.k])
+        c_pt      = self.encoder(u_pt)
+        x_info_pt = self.mapper(c_pt)
+        x_info_np = x_info_pt.detach().cpu().numpy()   # señal BPSK limpia
+        x_tx_np   = x_info_np * a_np                   # ceros en paquetes silenciosos
+
+        no_val = 10 ** (-ebno_db / 10) / self.rate
+        noise  = np.sqrt(no_val / 2) * (
+            np.random.randn(*x_tx_np.shape) + 1j * np.random.randn(*x_tx_np.shape)
+        )
+        y_np = x_tx_np + noise.astype(x_tx_np.dtype)
+
+        y_tf   = tf.complex(
+            tf.constant(y_np.real, dtype=tf.float32),
+            tf.constant(y_np.imag, dtype=tf.float32),
+        )
+        y_ri        = c2ri(y_tf)
+        x_hat_ri, _ = self.ae(y_ri, training=False)
+        x_hat_np    = ri2c(x_hat_ri).numpy()
+
+        return x_info_np, y_np, x_hat_np, a_np
