@@ -54,12 +54,9 @@ P_EMPTY        = 0.30
 THRESH         = 0.50
 RHO_DBS        = [0.0, 3.0]
 K_CAND         = list(range(5, N_FIXED + 1, 5))
-# Aumentar BATCH_SIZE_SIM y/o N_BATCHES_EVAL para capturar más errores raros.
-# Total de muestras por punto k = BATCH_SIZE_SIM * N_BATCHES_EVAL.
-# Para observar P ~ 1e-5 con fiabilidad estadística se recomienda >= 500 000 muestras
-# (ej. BATCH_SIZE_SIM=5000, N_BATCHES_EVAL=100).
-BATCH_SIZE_SIM = 3000
-N_BATCHES_EVAL = 40
+# Total de muestras por punto k = BATCH_SIZE_SIM * N_BATCHES_EVAL (500 000).
+BATCH_SIZE_SIM = 5000
+N_BATCHES_EVAL = 100
 
 
 def k_is_valid_for_5g(k, n):
@@ -317,7 +314,7 @@ def plot_comparison(n, rho_db, systems: dict, k_cand=None, polar_k_constraint=Tr
     plt.show()
 
 
-def _plot_log_curve(ax, Rs, y, marker, label, y_floor=1e-6):
+def _plot_log_curve(ax, Rs, y, marker, label, y_floor=1e-5):
     """
     Curva en escala log sin huecos ni barras verticales.
 
@@ -333,7 +330,7 @@ def _plot_log_curve(ax, Rs, y, marker, label, y_floor=1e-6):
 def _plot_and_save(Rs, PFAs, PMDs, PIEs, P_GLOBALs, title, fname,
                    pfa_cis=None, pmd_cis=None, pie_cis=None, p_global_cis=None,
                    plot_p_global=False, show=True,
-                   y_floor=1e-6, show_ci=False):
+                   y_floor=1e-5, show_ci=False):
     """
     Dibuja curvas P_FA / P_MD / P_IE en escala log.
 
