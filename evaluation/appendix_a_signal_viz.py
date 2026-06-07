@@ -128,7 +128,7 @@ def plot_signal_chain(
     axes[0].set_ylabel("Amplitude")
     axes[0].set_title(
         f"(a) Transmitted signal $x$ — BPSK  "
-        f"[$\\sigma^2 = {var_x:.4f}$]",
+        f"[$\\sigma_x^2 = {var_x:.4f}$]",
         loc="left",
     )
     axes[0].set_ylim([-2.8, 2.8])
@@ -139,7 +139,7 @@ def plot_signal_chain(
     axes[1].set_ylabel("Amplitude")
     axes[1].set_title(
         f"(b) Noisy received signal $y$  "
-        f"[$\\sigma^2 = {var_y:.4f}$]",
+        f"[$\\sigma_y^2 = {var_y:.4f}$]",
         loc="left",
     )
     axes[1].set_ylim([-2.8, 2.8])
@@ -151,8 +151,8 @@ def plot_signal_chain(
     axes[2].set_xlabel("Symbol index")
     axes[2].set_title(
         f"(c) AE reconstructed signal $\\hat{{x}}$  "
-        f"[$\\sigma^2 = {var_xhat:.4f}$  —  "
-        f"variance ratio $\\sigma^2_y/\\sigma^2_{{\\hat{{x}}}} = {ratio:.1f}\\times$]",
+        f"[$\\sigma_{{\\hat{{x}}}}^2 = {var_xhat:.4f}$;  "
+        f"$\\sigma_y^2 = {ratio:.1f}\\,\\sigma_{{\\hat{{x}}}}^2$]",
         loc="left",
     )
     axes[2].set_ylim([-2.8, 2.8])
