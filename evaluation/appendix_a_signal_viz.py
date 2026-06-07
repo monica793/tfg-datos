@@ -105,7 +105,7 @@ def plot_signal_chain(
     # ------------------------------------------------------------------ figura
     fig, axes = plt.subplots(3, 1, figsize=(10, 7.5), sharex=True)
     fig.suptitle(
-        f"Aplastamiento del ruido por el Autoencoder  "
+        f"Noise variance compression by the Autoencoder  "
         f"($\\rho = {rho_db:.0f}$ dB,  $n = {N_FIXED}$,  $k = {k}$,  "
         f"$R = {k/N_FIXED:.2f}$)",
         fontsize=13,
@@ -125,9 +125,9 @@ def plot_signal_chain(
     # Subplot (a) — señal transmitida
     axes[0].plot(sym_idx, x_plot, color=COLORS[0], linewidth=1.2,
                  marker="o", markersize=3.5, markevery=5, zorder=3)
-    axes[0].set_ylabel("Amplitud")
+    axes[0].set_ylabel("Amplitude")
     axes[0].set_title(
-        f"(a) Señal transmitida $x$ — BPSK  "
+        f"(a) Transmitted signal $x$ — BPSK  "
         f"[$\\sigma^2 = {var_x:.4f}$]",
         loc="left",
     )
@@ -136,9 +136,9 @@ def plot_signal_chain(
     # Subplot (b) — señal ruidosa
     axes[1].plot(sym_idx, y_plot, color=COLORS[1], linewidth=0.9,
                  alpha=0.85, zorder=3)
-    axes[1].set_ylabel("Amplitud")
+    axes[1].set_ylabel("Amplitude")
     axes[1].set_title(
-        f"(b) Señal recibida (ruidosa) $y$  "
+        f"(b) Noisy received signal $y$  "
         f"[$\\sigma^2 = {var_y:.4f}$]",
         loc="left",
     )
@@ -147,12 +147,12 @@ def plot_signal_chain(
     # Subplot (c) — señal reconstruida por AE
     axes[2].plot(sym_idx, xhat_plot, color=COLORS[2], linewidth=1.2,
                  marker="x", markersize=4, markevery=5, zorder=3)
-    axes[2].set_ylabel("Amplitud")
-    axes[2].set_xlabel("Índice de símbolo")
+    axes[2].set_ylabel("Amplitude")
+    axes[2].set_xlabel("Symbol index")
     axes[2].set_title(
-        f"(c) Señal reconstruida por el AE $\\hat{{x}}$  "
+        f"(c) AE reconstructed signal $\\hat{{x}}$  "
         f"[$\\sigma^2 = {var_xhat:.4f}$  —  "
-        f"ratio compresión $\\sigma^2_y/\\sigma^2_{{\\hat{{x}}}} = {ratio:.1f}\\times$]",
+        f"variance ratio $\\sigma^2_y/\\sigma^2_{{\\hat{{x}}}} = {ratio:.1f}\\times$]",
         loc="left",
     )
     axes[2].set_ylim([-2.8, 2.8])

@@ -18,8 +18,9 @@ _THESIS_RC = {
     "grid.alpha":            0.3,
     "grid.linewidth":        0.6,
     "axes.axisbelow":        True,
-    "font.family":           "sans-serif",
-    "font.sans-serif":       ["Arial", "DejaVu Sans", "Liberation Sans", "Helvetica"],
+    "font.family":           "serif",
+    "font.serif":            ["Times New Roman", "Times", "Nimbus Roman", "DejaVu Serif"],
+    "mathtext.fontset":      "stix",
     "font.size":             11,
     "axes.titlesize":        12,
     "axes.labelsize":        11,
@@ -302,11 +303,11 @@ def plot_comparison(n, rho_db, systems: dict, k_cand=None, polar_k_constraint=Tr
     for ax, title in zip(axes, titles):
         ax.set_title(title)
         ax.set_xlabel("R = k/n")
-        ax.set_ylabel("Probabilidad")
+        ax.set_ylabel("Probability")
         ax.grid(True, which="both", alpha=0.35)
         ax.legend()
 
-    fig.suptitle(f"Comparativa | n={n} | rho={rho_db} dB | p_empty={P_EMPTY}")
+    fig.suptitle(f"Comparison | n={n} | rho={rho_db} dB | p_empty={P_EMPTY}")
     plt.tight_layout()
 
     os.makedirs("results/figures", exist_ok=True)
@@ -316,19 +317,43 @@ def plot_comparison(n, rho_db, systems: dict, k_cand=None, polar_k_constraint=Tr
     plt.show()
 
 
+def _log_safe_yerr(y, low, high, y_floor=1e-6):
+    """
+    Errores asimétricos seguros para escala logarítmica.
+
+    Evita dos artefactos:
+      1. p = 0 exacto  -> NaN (no se dibuja el punto).
+      2. CI inferior = 0 con p > 0 -> el whisker inferior no baja de y_floor,
+         evitando la línea vertical hacia log(0) = -∞.
+    """
+    y = np.asarray(y, dtype=float)
+    low  = np.asarray(low,  dtype=float)
+    high = np.asarray(high, dtype=float)
+
+    zero_mask = (y <= 0.0) | ~np.isfinite(y)
+    y_plot = np.where(zero_mask, np.nan, y)
+
+    safe_low = np.where((low <= 0.0) | ~np.isfinite(low), y_floor, low)
+    safe_low = np.minimum(safe_low, y * 0.99)          # nunca por encima del punto
+    yerr_lo = np.where(zero_mask, np.nan, np.maximum(y - safe_low, 0.0))
+    yerr_hi = np.where(zero_mask, np.nan, np.maximum(high - y, 0.0))
+
+    return y_plot, np.vstack([yerr_lo, yerr_hi]), zero_mask
+
+
 def _plot_and_save(Rs, PFAs, PMDs, PIEs, P_GLOBALs, title, fname,
                    pfa_cis=None, pmd_cis=None, pie_cis=None, p_global_cis=None,
                    plot_p_global=False, show=True,
-                   show_zero_markers=True):
+                   y_floor=1e-6):
     """
-    show_zero_markers: si True, añade marcadores triangulares (▼) en los puntos
-    donde la probabilidad estimada es exactamente 0, indicando que no se
-    observaron errores en la simulación (cota superior implícita: 1/N_total).
-    Esto evita las líneas verticales en escala logarítmica.
+    Dibuja curvas P_FA / P_MD / P_IE en escala log sin artefactos de p=0.
+
+    Los puntos con probabilidad estimada exactamente 0 se omiten (hueco en la
+    línea). Los intervalos de confianza con límite inferior 0 se recortan en
+    y_floor para no generar whiskers verticales hacia -∞.
     """
     fig, ax = plt.subplots(figsize=(9, 5))
 
-    markers_cycle = {"o": "P_FA", "s": "P_MD", "^": "P_IE", "d": "P_global"}
     series = [
         (PFAs, pfa_cis, "o", "P_FA"),
         (PMDs, pmd_cis, "s", "P_MD"),
@@ -337,52 +362,25 @@ def _plot_and_save(Rs, PFAs, PMDs, PIEs, P_GLOBALs, title, fname,
     if plot_p_global:
         series.append((P_GLOBALs, p_global_cis, "d", "P_global"))
 
-    _zero_marker_added = False
-
     for vals, cis, marker, lbl in series:
         y = np.array(vals, dtype=float)
-
-        # Máscara de ceros exactos: en escala log causan líneas verticales
-        # hacia -∞. Se sustituyen por NaN para interrumpir la línea limpiamente.
-        zero_mask = (y == 0.0)
-        y_plot = np.where(zero_mask, np.nan, y)
 
         if cis is not None and len(cis) == len(vals):
             low  = np.array([c[0] for c in cis], dtype=float)
             high = np.array([c[1] for c in cis], dtype=float)
-            # Cuando y es NaN, los errores también deben ser NaN
-            yerr_lo = np.where(zero_mask, np.nan, np.maximum(y_plot - low,  0.0))
-            yerr_hi = np.where(zero_mask, np.nan, np.maximum(high - y_plot, 0.0))
-            yerr = np.vstack([yerr_lo, yerr_hi])
+            y_plot, yerr, _ = _log_safe_yerr(y, low, high, y_floor=y_floor)
             ax.errorbar(Rs, y_plot, yerr=yerr, marker=marker,
                         linestyle='-', capsize=3, label=lbl)
         else:
-            ax.semilogy(Rs, y_plot, marker=marker, linestyle='-', label=lbl)
-
-        # Marcadores ▼ donde p=0 exacto (sin errores observados en la simulación)
-        if show_zero_markers and np.any(zero_mask):
-            Rs_arr = np.array(Rs)
-            # Posición vertical provisional; se reajusta tras fijar la escala
-            ax.scatter(Rs_arr[zero_mask], np.full(zero_mask.sum(), np.nan),
-                       marker='v', s=40, zorder=5,
-                       label="_nolegend_" if _zero_marker_added else "sin errores obs.",
-                       color='gray', alpha=0.7)
-            _zero_marker_added = True
+            y_plot = np.where(y <= 0.0, np.nan, y)
+            ax.plot(Rs, y_plot, marker=marker, linestyle='-', label=lbl)
 
     ax.set_yscale("log")
+    ax.set_ylim(bottom=y_floor)
     ax.grid(True, which="both")
 
-    # Recolocar los marcadores ▼ en el borde inferior visible del eje
-    ax.figure.canvas.draw()
-    y_min, _ = ax.get_ylim()
-    y_floor = y_min * 1.5
-    for coll in ax.collections:
-        offs = coll.get_offsets()
-        if len(offs) > 0 and np.all(np.isnan(offs[:, 1])):
-            coll.set_offsets(np.c_[offs[:, 0], np.full(len(offs), y_floor)])
-
     ax.set_xlabel("R = k/n")
-    ax.set_ylabel("Probabilidad")
+    ax.set_ylabel("Probability")
     ax.set_title(title)
     ax.legend()
     os.makedirs(os.path.dirname(fname) or ".", exist_ok=True)
@@ -465,8 +463,8 @@ def run_threshold_sweep(
     plt.semilogy(thresholds, P_GLOBALs, marker="s", label="P_global")
     plt.axvline(best_tau, color="r", linestyle="--", label=f"tau*={best_tau:.2f}")
     plt.grid(True, which="both", alpha=0.35)
-    plt.xlabel("Umbral tau")
-    plt.ylabel("Probabilidad")
+    plt.xlabel("Threshold $\\tau$")
+    plt.ylabel("Probability")
     plt.title(f"P_IE/P_global vs tau | {label} | n={n} | k={k} | Eb/No={ebno_db:.2f} dB")
     plt.legend()
     fname_pie = os.path.join(figure_dir, f"pie_pglobal_vs_tau_{safe_label}_n{n}_k{k}_ebno{ebno_db}.png")
