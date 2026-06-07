@@ -317,40 +317,28 @@ def plot_comparison(n, rho_db, systems: dict, k_cand=None, polar_k_constraint=Tr
     plt.show()
 
 
-def _log_safe_yerr(y, low, high, y_floor=1e-6):
+def _plot_log_curve(ax, Rs, y, marker, label, y_floor=1e-6):
     """
-    Errores asimétricos seguros para escala logarítmica.
+    Curva en escala log sin huecos ni barras verticales.
 
-    Evita dos artefactos:
-      1. p = 0 exacto  -> NaN (no se dibuja el punto).
-      2. CI inferior = 0 con p > 0 -> el whisker inferior no baja de y_floor,
-         evitando la línea vertical hacia log(0) = -∞.
+    Si p=0 (sin errores observados), se dibuja en y_floor para mantener
+    la línea continua. Es la convención habitual en curvas BER/BLER.
     """
     y = np.asarray(y, dtype=float)
-    low  = np.asarray(low,  dtype=float)
-    high = np.asarray(high, dtype=float)
-
-    zero_mask = (y <= 0.0) | ~np.isfinite(y)
-    y_plot = np.where(zero_mask, np.nan, y)
-
-    safe_low = np.where((low <= 0.0) | ~np.isfinite(low), y_floor, low)
-    safe_low = np.minimum(safe_low, y * 0.99)          # nunca por encima del punto
-    yerr_lo = np.where(zero_mask, np.nan, np.maximum(y - safe_low, 0.0))
-    yerr_hi = np.where(zero_mask, np.nan, np.maximum(high - y, 0.0))
-
-    return y_plot, np.vstack([yerr_lo, yerr_hi]), zero_mask
+    y_plot = np.where((y <= 0.0) | ~np.isfinite(y), y_floor, y)
+    y_plot = np.maximum(y_plot, y_floor)
+    ax.plot(Rs, y_plot, marker=marker, linestyle="-", label=label)
 
 
 def _plot_and_save(Rs, PFAs, PMDs, PIEs, P_GLOBALs, title, fname,
                    pfa_cis=None, pmd_cis=None, pie_cis=None, p_global_cis=None,
                    plot_p_global=False, show=True,
-                   y_floor=1e-6):
+                   y_floor=1e-6, show_ci=False):
     """
-    Dibuja curvas P_FA / P_MD / P_IE en escala log sin artefactos de p=0.
+    Dibuja curvas P_FA / P_MD / P_IE en escala log.
 
-    Los puntos con probabilidad estimada exactamente 0 se omiten (hueco en la
-    línea). Los intervalos de confianza con límite inferior 0 se recortan en
-    y_floor para no generar whiskers verticales hacia -∞.
+    Por defecto no muestra intervalos de confianza (show_ci=False): en escala
+    log suelen generar artefactos visuales. Los IC siguen imprimiéndose en consola.
     """
     fig, ax = plt.subplots(figsize=(9, 5))
 
@@ -364,25 +352,27 @@ def _plot_and_save(Rs, PFAs, PMDs, PIEs, P_GLOBALs, title, fname,
 
     for vals, cis, marker, lbl in series:
         y = np.array(vals, dtype=float)
-
-        if cis is not None and len(cis) == len(vals):
+        if show_ci and cis is not None and len(cis) == len(vals):
             low  = np.array([c[0] for c in cis], dtype=float)
             high = np.array([c[1] for c in cis], dtype=float)
-            y_plot, yerr, _ = _log_safe_yerr(y, low, high, y_floor=y_floor)
-            ax.errorbar(Rs, y_plot, yerr=yerr, marker=marker,
-                        linestyle='-', capsize=3, label=lbl)
+            y_plot = np.where((y <= 0.0) | ~np.isfinite(y), y_floor, y)
+            y_plot = np.maximum(y_plot, y_floor)
+            yerr_hi = np.maximum(high - y_plot, 0.0)
+            ax.errorbar(
+                Rs, y_plot, yerr=yerr_hi, marker=marker,
+                linestyle="-", capsize=3, label=lbl, uplims=False,
+            )
         else:
-            y_plot = np.where(y <= 0.0, np.nan, y)
-            ax.plot(Rs, y_plot, marker=marker, linestyle='-', label=lbl)
+            _plot_log_curve(ax, Rs, y, marker, lbl, y_floor=y_floor)
 
     ax.set_yscale("log")
-    ax.set_ylim(bottom=y_floor)
+    ax.set_ylim(bottom=y_floor * 0.5, top=1.5)
     ax.grid(True, which="both")
 
     ax.set_xlabel("R = k/n")
     ax.set_ylabel("Probability")
     ax.set_title(title)
-    ax.legend()
+    ax.legend(loc="best")
     os.makedirs(os.path.dirname(fname) or ".", exist_ok=True)
     fig.savefig(fname, dpi=300)
     print(f"Figura guardada: {fname}")
