@@ -33,6 +33,22 @@ from utils.signal import rho_db_to_ebno_db
 
 # Número de símbolos a mostrar en la figura
 N_SYMBOLS = 50
+Y_LIM = (-2.5, 2.5)
+
+
+def _stem_discrete(ax, idx, values, color, marker="o", markersize=4.0, linewidth=0.9):
+    """Stem plot for discrete symbol sequences (communications-style)."""
+    markerline, stemlines, baseline = ax.stem(idx, values, basefmt=" ")
+    plt.setp(stemlines, color=color, linewidth=linewidth, alpha=0.85, zorder=2)
+    plt.setp(
+        markerline,
+        color=color,
+        marker=marker,
+        markersize=markersize,
+        markeredgewidth=0.9,
+        zorder=3,
+    )
+    baseline.set_visible(False)
 
 
 def plot_signal_chain(
@@ -123,30 +139,27 @@ def plot_signal_chain(
                     zorder=1)
 
     # Subplot (a) — señal transmitida
-    axes[0].plot(sym_idx, x_plot, color=COLORS[0], linewidth=1.2,
-                 marker="o", markersize=3.5, markevery=5, zorder=3)
+    _stem_discrete(axes[0], sym_idx, x_plot, COLORS[0], marker="o", markersize=4.0)
     axes[0].set_ylabel("Amplitude")
     axes[0].set_title(
         f"(a) Transmitted signal $x$ — BPSK  "
         f"[$\\sigma_x^2 = {var_x:.4f}$]",
         loc="left",
     )
-    axes[0].set_ylim([-2.8, 2.8])
+    axes[0].set_ylim(Y_LIM)
 
     # Subplot (b) — señal ruidosa
-    axes[1].plot(sym_idx, y_plot, color=COLORS[1], linewidth=0.9,
-                 alpha=0.85, zorder=3)
+    _stem_discrete(axes[1], sym_idx, y_plot, COLORS[1], marker="o", markersize=3.5, linewidth=0.8)
     axes[1].set_ylabel("Amplitude")
     axes[1].set_title(
         f"(b) Noisy received signal $y$  "
         f"[$\\sigma_y^2 = {var_y:.4f}$]",
         loc="left",
     )
-    axes[1].set_ylim([-2.8, 2.8])
+    axes[1].set_ylim(Y_LIM)
 
     # Subplot (c) — señal reconstruida por AE
-    axes[2].plot(sym_idx, xhat_plot, color=COLORS[2], linewidth=1.2,
-                 marker="x", markersize=4, markevery=5, zorder=3)
+    _stem_discrete(axes[2], sym_idx, xhat_plot, COLORS[2], marker="x", markersize=4.5)
     axes[2].set_ylabel("Amplitude")
     axes[2].set_xlabel("Symbol index")
     axes[2].set_title(
@@ -155,7 +168,7 @@ def plot_signal_chain(
         f"$\\sigma_y^2 = {ratio:.1f}\\,\\sigma_{{\\hat{{x}}}}^2$]",
         loc="left",
     )
-    axes[2].set_ylim([-2.8, 2.8])
+    axes[2].set_ylim(Y_LIM)
 
     for ax in axes:
         ax.set_xlim([0, n_sym - 1])
